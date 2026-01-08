@@ -71,9 +71,9 @@ if uploaded_files:
     if all_data:
         df_final = pd.DataFrame(all_data)
         
-        status_container.success(f"🟪 T-Spin Complete! Found {len(df_final):,} unique entries across {len(uploaded_files)} tapes.")
+        status_container.success(f"Complete! Found {len(df_final):,} unique entries across {len(uploaded_files)} tapes.")
         
-        st.subheader("Combined Data Preview")
+        st.subheader("Preview")
         st.dataframe(df_final, use_container_width=True)
 
         # 6. Export to Excel
