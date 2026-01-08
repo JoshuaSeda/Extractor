@@ -1,0 +1,5 @@
+Tapes/
+*.txt
+.venv/
+__pycache__/
+.streamlit/config.toml
