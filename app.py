@@ -1,15 +1,34 @@
 import streamlit as st
 import pandas as pd
 import io
+from gtts import gTTS
+import base64
 
-# 1. Tetris-themed configuration
-st.set_page_config(page_title="Open na", page_icon="📟", layout="wide")
+# 1. Page Configuration with Tape Icon 📟
+st.set_page_config(
+    page_title="Extractor", 
+    page_icon="📟", 
+    layout="wide"
+)
 
-st.title("Extractor")
-st.info("Pwede mag-upload ng multiple file, pero kung malaki yung .txt much better isa muna i-upload.")
+# Helper function for AI Voice
+def speak_text(text):
+    tts = gTTS(text=text, lang='en')
+    fp = io.BytesIO()
+    tts.write_to_fp(fp)
+    fp.seek(0)
+    audio_b64 = base64.b64encode(fp.read()).decode()
+    html_string = f"""
+        <audio autoplay>
+            <source src="data:audio/mp3;base64,{audio_b64}" type="audio/mp3">
+        </audio>
+    """
+    st.components.v1.html(html_string, height=0)
+
+st.title("📟Tape Extractor")
+st.info("Pwede mag-upload ng multiple file. Kung malaki yung .txt, better kung isa-isa lang.")
 
 # 2. Multiple File Uploader
-# Ensure .streamlit/config.toml exists with maxUploadSize = 20480
 uploaded_files = st.file_uploader(
     "Choose .txt files", 
     type="txt", 
@@ -18,74 +37,96 @@ uploaded_files = st.file_uploader(
 
 if uploaded_files:
     all_data = []
+    processed_tape_names = [] # To store names for the AI voice
     status_container = st.empty()
     
     for uploaded_file in uploaded_files:
         tape_name = uploaded_file.name.replace(".txt", "")
-        status_container.text(f"Currently processing: {tape_name}...")
+        processed_tape_names.append(tape_name)
+        status_container.text(f"Processing: {tape_name}...")
         
-        # Unique to THIS tape only (keeps same node name if it appears on different tapes)
-        seen_in_this_tape = set()
+        # Track (Node Name, Type) to allow both Bkup and Arch
+        seen_in_this_tape = set() 
+        pending_entry = None
 
         try:
-            # Memory-efficient streaming for huge files
             for line_bytes in uploaded_file:
                 line = line_bytes.decode("utf-8", errors="ignore")
                 
-                # STICKY FILTER: 
-                # Skip continuation lines (IBM TSM paths start with spaces)
-                if not line.strip() or line.startswith(" "):
-                    continue
-                
-                # Skip TSM system headers/messages
-                if line.startswith("ANS") or "Node Name" in line or "----" in line:
-                    continue
-
-                # 3. FIXED-WIDTH SLICING (The Precision Fix)
-                # IBM Layout: Node Name (0-16), Type (17-25)
-                # This prevents picking up 'backup' from inside a long file path
-                node_name = line[0:16].strip()
+                # Column 1: Node Name (0-16), Column 2: Type (17-25)
+                node_part = line[0:16].strip()
                 raw_type = line[17:25].strip().lower()
 
-                # 4. Strict Type Mapping
                 clean_type = None
                 if "bkup" in raw_type:
                     clean_type = "Backup"
                 elif "arch" in raw_type:
                     clean_type = "Archive"
 
-                # Only add if we found a valid Backup/Archive type
-                if clean_type and node_name:
-                    if node_name not in seen_in_this_tape:
-                        all_data.append({
-                            "Tape ID": tape_name,
-                            "Node Name": node_name,
-                            "Type": clean_type
-                        })
-                        seen_in_this_tape.add(node_name)
+                if clean_type:
+                    if pending_entry:
+                        unique_id = (pending_entry["Node Name"], pending_entry["Type"])
+                        if unique_id not in seen_in_this_tape:
+                            all_data.append(pending_entry)
+                            seen_in_this_tape.add(unique_id)
+                    
+                    name_to_store = node_part
+                    waiting_for_more = False
+                    
+                    # Handle TSM name wrapping
+                    if name_to_store.endswith("-"):
+                        name_to_store = name_to_store[:-1]
+                        waiting_for_more = True
+                    
+                    pending_entry = {
+                        "Tape ID": tape_name,
+                        "Node Name": name_to_store,
+                        "Type": clean_type,
+                        "is_wrapped": waiting_for_more
+                    }
+
+                elif pending_entry and pending_entry["is_wrapped"]:
+                    if node_part and not line.startswith(" "):
+                        pending_entry["Node Name"] += node_part
+                        pending_entry["is_wrapped"] = False 
+
+                if not line.strip() or line.startswith("ANS") or "Node Name" in line or "----" in line:
+                    continue
+
+            if pending_entry:
+                unique_id = (pending_entry["Node Name"], pending_entry["Type"])
+                if unique_id not in seen_in_this_tape:
+                    all_data.append(pending_entry)
+                    seen_in_this_tape.add(unique_id)
 
         except Exception as e:
             st.error(f"Error processing {tape_name}: {e}")
 
-    # 5. Results Display
+    # 3. Final Voice and Display Logic
     if all_data:
         df_final = pd.DataFrame(all_data)
+        if "is_wrapped" in df_final.columns:
+            df_final = df_final.drop(columns=["is_wrapped"])
+
+        # Create the success message for multiple tapes
+        tapes_string = ", ".join(processed_tape_names)
+        success_voice = f"Here's the result for {tapes_string} tapes. Thank you."
+        speak_text(success_voice)
         
-        status_container.success(f"Complete! Found {len(df_final):,} unique entries across {len(uploaded_files)} tapes.")
-        
-        st.subheader("Preview")
+        status_container.success(f"✅ Found {len(df_final):,} total entries.")
         st.dataframe(df_final, use_container_width=True)
 
-        # 6. Export to Excel
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             df_final.to_excel(writer, index=False, sheet_name='Tape Report')
         
         st.download_button(
-            label="📥 Download All Tapes Excel Report",
+            label="📥 Download Excel Report",
             data=buffer.getvalue(),
             file_name="combined_tape_report.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.warning("No valid Backup or Archive data found in the files.")
+        # Error Voice if no Backup/Archive data found at all
+        speak_text("Error, data cannot be found.")
+        st.error("No valid Backup or Archive data found in the files.")
